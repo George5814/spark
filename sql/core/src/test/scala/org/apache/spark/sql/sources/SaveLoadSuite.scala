@@ -21,7 +21,8 @@ import java.io.File
 
 import org.scalatest.BeforeAndAfter
 
-import org.apache.spark.sql.{AnalysisException, DataFrame, SaveMode, SQLConf}
+import org.apache.spark.sql.{AnalysisException, DataFrame, SaveMode}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSQLContext
 import org.apache.spark.sql.types._
 import org.apache.spark.util.Utils
@@ -41,7 +42,7 @@ class SaveLoadSuite extends DataSourceTest with SharedSQLContext with BeforeAndA
 
     val rdd = sparkContext.parallelize((1 to 10).map(i => s"""{"a":$i, "b":"str${i}"}"""))
     df = caseInsensitiveContext.read.json(rdd)
-    df.registerTempTable("jsonTable")
+    df.createOrReplaceTempView("jsonTable")
   }
 
   override def afterAll(): Unit = {
@@ -121,8 +122,8 @@ class SaveLoadSuite extends DataSourceTest with SharedSQLContext with BeforeAndA
 
     // verify the append mode
     df.write.mode(SaveMode.Append).json(path.toString)
-    val df2 = df.unionAll(df)
-    df2.registerTempTable("jsonTable2")
+    val df2 = df.union(df)
+    df2.createOrReplaceTempView("jsonTable2")
 
     checkLoad(df2, "jsonTable2")
   }

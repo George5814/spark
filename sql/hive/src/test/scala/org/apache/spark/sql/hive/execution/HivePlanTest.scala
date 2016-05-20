@@ -28,9 +28,9 @@ class HivePlanTest extends QueryTest with TestHiveSingleton {
   import hiveContext.implicits._
 
   test("udf constant folding") {
-    Seq.empty[Tuple1[Int]].toDF("a").registerTempTable("t")
-    val optimized = sql("SELECT cos(null) FROM t").queryExecution.optimizedPlan
-    val correctAnswer = sql("SELECT cast(null as double) FROM t").queryExecution.optimizedPlan
+    Seq.empty[Tuple1[Int]].toDF("a").createOrReplaceTempView("t")
+    val optimized = sql("SELECT cos(null) AS c FROM t").queryExecution.optimizedPlan
+    val correctAnswer = sql("SELECT cast(null as double) AS c FROM t").queryExecution.optimizedPlan
 
     comparePlans(optimized, correctAnswer)
   }

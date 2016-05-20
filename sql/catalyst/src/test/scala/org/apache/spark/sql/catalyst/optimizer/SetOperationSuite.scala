@@ -17,7 +17,7 @@
 
 package org.apache.spark.sql.catalyst.optimizer
 
-import org.apache.spark.sql.catalyst.analysis.EliminateSubQueries
+import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
 import org.apache.spark.sql.catalyst.dsl.expressions._
 import org.apache.spark.sql.catalyst.dsl.plans._
 import org.apache.spark.sql.catalyst.plans.PlanTest
@@ -28,19 +28,17 @@ class SetOperationSuite extends PlanTest {
   object Optimize extends RuleExecutor[LogicalPlan] {
     val batches =
       Batch("Subqueries", Once,
-        EliminateSubQueries) ::
+        EliminateSubqueryAliases) ::
       Batch("Union Pushdown", Once,
         CombineUnions,
         SetOperationPushDown,
-        SimplifyFilters) :: Nil
+        PruneFilters) :: Nil
   }
 
   val testRelation = LocalRelation('a.int, 'b.int, 'c.int)
   val testRelation2 = LocalRelation('d.int, 'e.int, 'f.int)
   val testRelation3 = LocalRelation('g.int, 'h.int, 'i.int)
   val testUnion = Union(testRelation :: testRelation2 :: testRelation3 :: Nil)
-  val testIntersect = Intersect(testRelation, testRelation2)
-  val testExcept = Except(testRelation, testRelation2)
 
   test("union: combine unions into one unions") {
     val unionQuery1 = Union(Union(testRelation, testRelation2), testRelation)
@@ -55,22 +53,6 @@ class SetOperationSuite extends PlanTest {
     val unionQuery3 = Union(unionQuery1, unionQuery2)
     val unionOptimized3 = Optimize.execute(unionQuery3.analyze)
     comparePlans(combinedUnionsOptimized, unionOptimized3)
-  }
-
-  test("intersect/except: filter to each side") {
-    val intersectQuery = testIntersect.where('b < 10)
-    val exceptQuery = testExcept.where('c >= 5)
-
-    val intersectOptimized = Optimize.execute(intersectQuery.analyze)
-    val exceptOptimized = Optimize.execute(exceptQuery.analyze)
-
-    val intersectCorrectAnswer =
-      Intersect(testRelation.where('b < 10), testRelation2.where('e < 10)).analyze
-    val exceptCorrectAnswer =
-      Except(testRelation.where('c >= 5), testRelation2.where('f >= 5)).analyze
-
-    comparePlans(intersectOptimized, intersectCorrectAnswer)
-    comparePlans(exceptOptimized, exceptCorrectAnswer)
   }
 
   test("union: filter to each side") {
@@ -92,16 +74,5 @@ class SetOperationSuite extends PlanTest {
         testRelation2.select('d) ::
         testRelation3.select('g) :: Nil).analyze
     comparePlans(unionOptimized, unionCorrectAnswer)
-  }
-
-  test("SPARK-10539: Project should not be pushed down through Intersect or Except") {
-    val intersectQuery = testIntersect.select('b, 'c)
-    val exceptQuery = testExcept.select('a, 'b, 'c)
-
-    val intersectOptimized = Optimize.execute(intersectQuery.analyze)
-    val exceptOptimized = Optimize.execute(exceptQuery.analyze)
-
-    comparePlans(intersectOptimized, intersectQuery.analyze)
-    comparePlans(exceptOptimized, exceptQuery.analyze)
   }
 }

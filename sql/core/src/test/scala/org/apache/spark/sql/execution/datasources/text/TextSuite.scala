@@ -17,7 +17,15 @@
 
 package org.apache.spark.sql.execution.datasources.text
 
-import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row}
+import java.io.File
+
+import scala.collection.JavaConverters._
+
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.io.SequenceFile.CompressionType
+import org.apache.hadoop.io.compress.GzipCodec
+
+import org.apache.spark.sql.{AnalysisException, DataFrame, QueryTest, Row, SaveMode}
 import org.apache.spark.sql.test.SharedSQLContext
 import org.apache.spark.sql.types.{StringType, StructType}
 import org.apache.spark.util.Utils
@@ -25,20 +33,20 @@ import org.apache.spark.util.Utils
 class TextSuite extends QueryTest with SharedSQLContext {
 
   test("reading text file") {
-    verifyFrame(sqlContext.read.format("text").load(testFile))
+    verifyFrame(spark.read.format("text").load(testFile))
   }
 
   test("SQLContext.read.text() API") {
-    verifyFrame(sqlContext.read.text(testFile))
+    verifyFrame(spark.read.text(testFile).toDF())
   }
 
   test("SPARK-12562 verify write.text() can handle column name beyond `value`") {
-    val df = sqlContext.read.text(testFile).withColumnRenamed("value", "adwrasdf")
+    val df = spark.read.text(testFile).withColumnRenamed("value", "adwrasdf")
 
     val tempFile = Utils.createTempDir()
     tempFile.delete()
     df.write.text(tempFile.getCanonicalPath)
-    verifyFrame(sqlContext.read.text(tempFile.getCanonicalPath))
+    verifyFrame(spark.read.text(tempFile.getCanonicalPath).toDF())
 
     Utils.deleteRecursively(tempFile)
   }
@@ -47,13 +55,74 @@ class TextSuite extends QueryTest with SharedSQLContext {
     val tempFile = Utils.createTempDir()
     tempFile.delete()
 
-    val df = sqlContext.range(2)
+    val df = spark.range(2)
     intercept[AnalysisException] {
       df.write.text(tempFile.getCanonicalPath)
     }
 
     intercept[AnalysisException] {
-      sqlContext.range(2).select(df("id"), df("id") + 1).write.text(tempFile.getCanonicalPath)
+      spark.range(2).select(df("id"), df("id") + 1).write.text(tempFile.getCanonicalPath)
+    }
+  }
+
+  test("reading partitioned data using read.text()") {
+    val partitionedData = Thread.currentThread().getContextClassLoader
+      .getResource("text-partitioned").toString
+    val df = spark.read.text(partitionedData)
+    val data = df.collect()
+
+    assert(df.schema == new StructType().add("value", StringType))
+    assert(data.length == 2)
+  }
+
+  test("support for partitioned reading") {
+    val partitionedData = Thread.currentThread().getContextClassLoader
+      .getResource("text-partitioned").toString
+    val df = spark.read.format("text").load(partitionedData)
+    val data = df.filter("year = '2015'").select("value").collect()
+
+    assert(data(0) == Row("2015-test"))
+    assert(data.length == 1)
+  }
+
+  test("SPARK-13503 Support to specify the option for compression codec for TEXT") {
+    val testDf = spark.read.text(testFile)
+    val extensionNameMap = Map("bzip2" -> ".bz2", "deflate" -> ".deflate", "gzip" -> ".gz")
+    extensionNameMap.foreach {
+      case (codecName, extension) =>
+        val tempDir = Utils.createTempDir()
+        val tempDirPath = tempDir.getAbsolutePath
+        testDf.write.option("compression", codecName).mode(SaveMode.Overwrite).text(tempDirPath)
+        val compressedFiles = new File(tempDirPath).listFiles()
+        assert(compressedFiles.exists(_.getName.endsWith(s".txt$extension")))
+        verifyFrame(spark.read.text(tempDirPath).toDF())
+    }
+
+    val errMsg = intercept[IllegalArgumentException] {
+      val tempDirPath = Utils.createTempDir().getAbsolutePath
+      testDf.write.option("compression", "illegal").mode(SaveMode.Overwrite).text(tempDirPath)
+    }
+    assert(errMsg.getMessage.contains("Codec [illegal] is not available. " +
+      "Known codecs are"))
+  }
+
+  test("SPARK-13543 Write the output as uncompressed via option()") {
+    val extraOptions = Map[String, String](
+      "mapreduce.output.fileoutputformat.compress" -> "true",
+      "mapreduce.output.fileoutputformat.compress.type" -> CompressionType.BLOCK.toString,
+      "mapreduce.map.output.compress" -> "true",
+      "mapreduce.output.fileoutputformat.compress.codec" -> classOf[GzipCodec].getName,
+      "mapreduce.map.output.compress.codec" -> classOf[GzipCodec].getName
+    )
+    withTempDir { dir =>
+      val testDf = spark.read.text(testFile)
+      val tempDir = Utils.createTempDir()
+      val tempDirPath = tempDir.getAbsolutePath
+      testDf.write.option("compression", "none")
+        .options(extraOptions).mode(SaveMode.Overwrite).text(tempDirPath)
+      val compressedFiles = new File(tempDirPath).listFiles()
+      assert(compressedFiles.exists(!_.getName.endsWith(".txt.gz")))
+      verifyFrame(spark.read.options(extraOptions).text(tempDirPath).toDF())
     }
   }
 
